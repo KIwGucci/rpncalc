@@ -37,7 +37,7 @@ jobs:
         id: properties
         shell: bash
         run: |
-          VERSION="$(cargo run --bin version)"
+          VERSION="$(cargo run --bin rpncalc)"
           echo "name=version::$VERSION" >> $GITHUB_OUTPUT
       - name: Upload artifact
         uses: actions/upload-artifact@v2
