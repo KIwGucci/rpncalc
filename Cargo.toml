@@ -1,0 +1,14 @@
+[package]
+name = "rpncalc"
+version = "0.5.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.85"
+rustyline = "14.0.0"
+crossterm = "0.27.0"
+
+[dependencies.num]
+version = "0.4.3"
