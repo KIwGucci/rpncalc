@@ -49,6 +49,9 @@ jobs:
     name: Release Draft
     if: github.event_name != 'pull_request'
     needs: [build]
+    permissions:
+        contents: write
+        pull-requests: write
     runs-on: ubuntu-latest
     steps:
       # Check out current repository
