@@ -1,124 +1,76 @@
-name: Rust
+name: Build and Release
+
+permissions:
+  contents: write
 
 on:
   push:
     tags:
-      - 'v*'
-
+      - v*
 env:
-  CARGO_TERM_COLOR: always
+  PROJECT_NAME: rpncalc
 
 jobs:
   build:
-
+    runs-on: ${{ matrix.job.os }}
     strategy:
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - x86_64-pc-windows-msvc
-          - x86_64-apple-darwin
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-
-    runs-on: ${{ matrix.os }}
+        job:
+          - {
+              os: ubuntu-latest,
+              target: x86_64-unknown-linux-gnu,
+              use-cross: false,
+              extension: "",
+            }
+          - {
+              os: ubuntu-latest,
+              target: aarch64-unknown-linux-gnu,
+              use-cross: true,
+              extension: "",
+            }
+          - {
+              os: macos-latest,
+              target: x86_64-apple-darwin,
+              use-cross: false,
+              extension: "",
+            }
+          - {
+              os: macos-latest,
+              target: aarch64-apple-darwin,
+              use-cross: false,
+              extension: "",
+            }
+          - {
+              os: windows-latest,
+              target: x86_64-pc-windows-msvc,
+              use-cross: false,
+              extension: .exe,
+            }
 
     steps:
-      - name: Setup code
-        uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install musl tools
-        if : matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt install -qq -y musl-tools --no-install-recommends
-      
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-
-      - name: test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+          target: ${{ matrix.job.target }}
 
       - name: Build
         uses: actions-rs/cargo@v1
         with:
+          use-cross: ${{ matrix.job.use-cross }}
           command: build
-          args: --release --target=${{ matrix.target }}
+          args: --release --target ${{ matrix.job.target }}
 
-      - name: Package for linux-musl
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+      - name: Rename artifacts
         run: |
-          zip --junk-paths rc-${{ matrix.target }} target/${{ matrix.target }}/release/rc
+          mv target/${{ matrix.job.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.job.extension }} ${{ env.PROJECT_NAME }}-${{ github.ref_name }}-${{ matrix.job.target }}${{ matrix.job.extension }}
 
-      - name: Package for windows
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: |
-          powershell Compress-Archive -Path target/${{ matrix.target }}/release/rc.exe -DestinationPath rc-${{ matrix.target }}.zip
-
-      - name: Package for macOS
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: |
-          zip --junk-paths rc-${{ matrix.target }} target/${{ matrix.target }}/release/rc
-
-      - uses: actions/upload-artifact@v2
-        with:
-          name: build-${{ matrix.target }}
-          path: rc-${{ matrix.target }}.zip
-
-  create-release:
-    needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - id: create-release
-        uses: actions/create-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: true
-      - run: |
-          echo '${{ steps.create-release.outputs.upload_url }}' > release_upload_url.txt
-      - uses: actions/upload-artifact@v1
-        with:
-          name: create-release
-          path: release_upload_url.txt
-    
-  upload-release:
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - x86_64-pc-windows-msvc
-          - x86_64-apple-darwin
-    needs: [create-release]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v1
-        with:
-          name: create-release
-      - id: upload-url
-        run: |
-          echo "::set-output name=url::$(cat create-release/release_upload_url.txt)"
-      - uses: actions/download-artifact@v1
-        with:
-          name: build-${{ matrix.target }}
-      - uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.upload-url.outputs.url }}
-          asset_path: ./build-${{ matrix.target }}/rc-${{ matrix.target }}.zip
-          asset_name: rc-${{ matrix.target }}.zip
-          asset_content_type: application/zip
+          files: |
+            ${{ env.PROJECT_NAME }}-${{ github.ref_name }}-${{ matrix.job.target }}${{ matrix.job.extension }}
