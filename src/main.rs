@@ -1,8 +1,8 @@
 extern crate num;
 use ::std::collections::HashMap;
 use anyhow::{bail, Result};
-use crossterm::terminal::Clear;
-use crossterm::{execute, terminal};
+use crossterm::terminal::{Clear, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::{execute, terminal, ExecutableCommand};
 use num::bigint::BigInt;
 use num::{
     integer::Roots,
@@ -30,19 +30,22 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
     my_readline.set_max_history_size(20)?;
 
     let mut stdout = stdout();
-    execute!(
-        stdout,
-        terminal::SetSize(80, 20),
-        Clear(terminal::ClearType::All)
-    )?;
+    stdout.execute(EnterAlternateScreen)?;
 
-    println!("RPN Calculator.\nInput 'help' to see functions.\nPress Enter key.");
+    writeln!(
+        stdout,
+        "RPN Calculator.\nInput 'help' to see functions.\nPress Enter key."
+    )?;
+    writeln!(stdout, "{}", "\n".repeat(14),)?;
+    stdout.flush()?;
 
     loop {
-        manage_token(app, &mut my_readline)?;
+        let is_continue = manage_token(app, &mut my_readline)?;
+        if !is_continue && is_sure("Will you quit rpncalc?")? {
+            break;
+        }
         execute!(&stdout, Clear(terminal::ClearType::All))?;
 
-        let mut io_publisher = BufWriter::new(&stdout);
         app.last_stack_length = app.stack_vec.stack.len();
 
         // 変数ストックと関数ストックの表示用文字列の準備
@@ -67,7 +70,7 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
         }
 
         writeln!(
-            &mut io_publisher,
+            &mut stdout,
             "Memo: {}\nFunc: {}\n[{:#?}] [{:?}] [{:?}:{}] [StackLen:{}] [UndoLen:{}]",
             memos,
             funcmemo,
@@ -82,6 +85,7 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
         let max_disp_stack_len = 8;
         let stacklen = app.stack_vec.stack.len();
         let last_stack_len = app.last_stack_length;
+
         let display_stack_length = if last_stack_len > max_disp_stack_len {
             last_stack_len - max_disp_stack_len
         } else {
@@ -94,7 +98,7 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
                 .enumerate()
             {
                 writeln!(
-                    &mut io_publisher,
+                    &mut stdout,
                     "[{}]: {:<20}",
                     last_stack_len - display_stack_length - i,
                     s
@@ -106,21 +110,20 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
         if stacklen > 1 {
             let lnum = &app.stack_vec.stack[stacklen - 2];
             let disp_num = convnum(app, lnum);
-            writeln!(&mut io_publisher, "[2]: {:<20}", disp_num,)?;
+            writeln!(&mut stdout, "[2]: {:<20}", disp_num,)?;
         }
 
-        write!(&mut io_publisher, "{:<25}", "\u{2500}".repeat(22),)?;
-
+        write!(&mut stdout, "{:<25}", "\u{2500}".repeat(22),)?;
         writeln!(
-            &mut io_publisher,
+            &mut stdout,
             "History >>{:<20}",
             &app.token_history.join(" ")
         )?;
 
         // 警告メッセージ
         if !app.remark_message.is_empty() {
-            write!(&mut io_publisher, "{:<25}", "\u{2500}".repeat(22),)?;
-            writeln!(&mut io_publisher, "{:<20}", app.remark_message)?;
+            write!(&mut stdout, "{:<25}", "\u{2500}".repeat(22),)?;
+            writeln!(&mut stdout, "{:<20}", app.remark_message)?;
         }
 
         // 最後の値
@@ -128,21 +131,21 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
 
         if let Some(lastnum) = app.stack_vec.stack.last() {
             let disp_num = convnum(app, lastnum);
-            writeln!(
-                &mut io_publisher,
-                "[1]: {:<20}{}",
-                disp_num, &app.result_message
-            )?;
+            writeln!(&mut stdout, "[1]: {:<20}{}", disp_num, &app.result_message)?;
         } else {
-            writeln!(&mut io_publisher, "     {:<20}{}", "", &app.result_message)?;
+            writeln!(&mut stdout, "     {:<20}{}", "", &app.result_message)?;
         }
 
-        io_publisher.flush()?;
+        stdout.flush()?;
     }
+
+    stdout.execute(LeaveAlternateScreen)?;
+    Ok(())
 }
 
 ///入力されたトークンをマネジメントする
-fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -> Result<()> {
+/// q もしくは　quitでResult<false>を返す
+fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -> Result<bool> {
     let in_token: String;
 
     match app.read_token.pop() {
@@ -157,7 +160,10 @@ fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -
 
             match readline {
                 Ok(token) => {
-                    in_token = token;
+                    in_token = token.trim().to_lowercase();
+                    if &in_token == "q" || &in_token == "quit" {
+                        return Ok(false);
+                    }
                 }
                 Err(_) => {
                     in_token = "".to_string();
@@ -189,7 +195,7 @@ fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -
             my_readline.add_history_entry(in_token)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn readfile(path: &str) -> Result<Vec<String>> {
@@ -237,7 +243,7 @@ struct StackVec<T: Num + Clone> {
     undo_stack: Vec<Vec<T>>,
 }
 
-impl<T: Num + Clone + Debug> StackVec<T> {
+impl<T: Num + Clone + Debug + num::FromPrimitive> StackVec<T> {
     fn new() -> Self {
         Self {
             stack: Vec::new(),
@@ -257,6 +263,9 @@ impl<T: Num + Clone + Debug> StackVec<T> {
         self.stack.clear();
     }
 
+    fn len(&self) -> T {
+        num::FromPrimitive::from_usize(self.stack.len()).unwrap()
+    }
     fn backup(&mut self) {
         // undo Vecへスタックを追加
         self.undo_stack.push(self.stack.to_owned());
@@ -383,13 +392,6 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
             };
             // 前のスタックに数値があればそれと同じものをスタックに入れる
             self.stack_vec.stack.push(*item);
-        } else if matches!(tokens[0].to_lowercase().as_str(), "q" | "exit") {
-            // 終了コマンド受付
-            if is_sure("Will you quit rpncalc?")? {
-                std::process::exit(0);
-            } else {
-                return Ok(());
-            }
         } else if tokens[0].to_lowercase() == "help" {
             // helpコマンド受付
             self.help()?;
@@ -410,10 +412,12 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
             // N進法記述処理
             let mut is_nbase = false;
             let ctoken_len = ctoken.len();
+
             if ctoken_len > 1 {
                 let head = ctoken[0];
                 let second = ctoken[1];
                 let tail = ctoken.last().expect("Could not get chars last");
+
                 if matches!(head, 'B' | 'O' | 'D' | 'H')
                     && (second.is_ascii_digit() || matches!(second, 'a'..='f'))
                 {
@@ -428,206 +432,13 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                     token = ctoken.into_iter().collect();
                 }
             }
-            // drop(ctoken);
 
             if let Ok(x) = &token.parse::<f64>() {
                 // 数値に変換できたらスタックへ積む
                 let num = NumCast::from(*x).expect("Could not NumCast::from");
                 self.stack_vec.push(num);
             } else if !is_nbase {
-                match &token.to_lowercase()[..] {
-                    "read" => {
-                        if let Some(path) = tokens.pop() {
-                            self.mem_value.clear();
-                            self.func_mem.clear();
-                            self.stack_vec.clear();
-                            self.read_token = readfile(&path)?;
-                        } else {
-                            bail!("too few arguments.");
-                        }
-                    }
-
-                    "dsfix" => {
-                        if let Some(point_num) = tokens.pop() {
-                            self.display_format = DispFormat::Fix;
-                            let pnum = point_num.to_string();
-                            self.disp_pointnum = pnum.parse()?;
-                        } else {
-                            bail!("too few arguments.");
-                        }
-                    }
-
-                    "dseng" => {
-                        if let Some(point_num) = tokens.pop() {
-                            self.display_format = DispFormat::Eng;
-                            let pnum = point_num.to_string();
-                            self.disp_pointnum = pnum.parse()?;
-                        } else {
-                            bail!("too few arguments.");
-                        }
-                    }
-
-                    "dsall" => {
-                        self.display_format = DispFormat::All;
-                    }
-
-                    "sto" | "to" => {
-                        if let Some(key) = tokens.pop() {
-                            if !self.is_ok_mem_string(&key, false) {
-                                bail!("This memory key is not available.")
-                            }
-                            match self.stack_vec.stack.pop() {
-                                Some(value) => {
-                                    match self.mem_value.insert(key.to_string(), value) {
-                                        // 既にkeyが使われていれば値が返ってくるので上書きされた事を知らせる。
-                                        Some(item) => self.add_result_message(&format!(
-                                            "{}:{:?} was overriden by {:?}.",
-                                            key, item, value
-                                        )),
-                                        None => self.add_result_message(&format!(
-                                            "{:?} is stocked to {}.",
-                                            value, key
-                                        )),
-                                    }
-                                }
-                                None => {
-                                    bail!("invalid Syntax at memory value.");
-                                }
-                            }
-                        } else {
-                            bail!("invalid Syntax at memory value.");
-                        }
-                    }
-
-                    "mdel" => match tokens.pop() {
-                        Some(key) => {
-                            if self.mem_value.remove(&key).is_some() {
-                                self.add_result_message(&format!("{} is removed", key));
-                            } else {
-                                bail!("Such name is none in memos")
-                            }
-                        }
-                        None => {
-                            bail!("invalid Syntax at delete memo.");
-                        }
-                    },
-
-                    "def" | "fn" => match tokens.pop() {
-                        Some(key) => {
-                            if !self.is_ok_mem_string(&key, true) {
-                                bail!("This func key is not available.")
-                            };
-
-                            // 残りのトークンを反転
-                            tokens.reverse();
-
-                            // 文字を連結
-                            let value = tokens.join(" ");
-                            if value.is_empty() {
-                                bail!("invalid Syntax at define function.");
-                            };
-
-                            match self.func_mem.insert(key.to_string(), value.to_string()) {
-                                Some(item) => {
-                                    self.remark_message =
-                                        format!("{}:{:?} was overriden by {:?}.", key, item, value)
-                                }
-                                None => {
-                                    self.remark_message = format!("{}:{:?} is defined.", key, value)
-                                }
-                            };
-
-                            tokens.clear();
-                        }
-
-                        None => {
-                            bail!("invalid Syntax at funcs value.");
-                        }
-                    },
-
-                    "repeat" | "rp" => match self.stack_vec.pop() {
-                        Some(n) => {
-                            let repnum = n.to_usize().expect("Could not cast to usize");
-                            if tokens.is_empty() {
-                                bail!("no command for repeat")
-                            };
-
-                            let mut reptokens = tokens.to_owned();
-
-                            reptokens.reverse();
-
-                            let reptoken = reptokens.join(" ");
-
-                            for _ in 0..repnum - 1 {
-                                self.calc(&reptoken)?
-                            }
-                        }
-
-                        None => {
-                            bail!("repeat number is none.");
-                        }
-                    },
-
-                    "roll" => match self.stack_vec.pop() {
-                        Some(n) => match n.round().to_usize() {
-                            Some(n_usize) => {
-                                let rollnum = n_usize - 1;
-                                let lastnum = self.stack_vec.stack.len() - 1;
-
-                                if rollnum <= lastnum {
-                                    self.stack_vec.stack.swap(lastnum - rollnum, lastnum);
-                                } else {
-                                    self.stack_vec.stack.push(n);
-
-                                    bail!("Invalid syntax at roll command.");
-                                }
-                            }
-
-                            None => {
-                                bail!("roll argument is not integer.");
-                            }
-                        },
-
-                        None => {
-                            bail!("repeat number is none.");
-                        }
-                    },
-
-                    "fdel" => match tokens.pop() {
-                        Some(key) => match self.func_mem.remove(&key) {
-                            Some(_) => {
-                                self.add_result_message(&format!("func:{} is removed", key));
-                            }
-                            None => bail!("Such name is none in functions"),
-                        },
-
-                        None => {
-                            bail!("invalid Syntax at delete function.");
-                        }
-                    },
-
-                    _ => {
-                        if self.mem_value.contains_key(&token) {
-                            // メモに格納した値があればスタックに収納
-                            self.stack_vec.push(self.mem_value[&token]);
-                        } else if self.func_mem.contains_key(&token) {
-                            // 定義した関数であればtokenを実行
-                            let functoken = self.func_mem[&token].to_owned();
-                            self.calc(&functoken)?;
-                        } else if self.no_pop_func.contains(&token) {
-                            // no pop funcのワードに含まれていればその処理へ
-                            self.no_pop_functions(&token)?
-                        } else if self.single_functions.contains(&token) {
-                            // single pop funcのワードに含まれていればその処理へ
-                            self.single_pop_function(&token)?;
-                        } else if self.stack_vec.stack.len() >= 2 {
-                            // その他演算子でスタック要素2個以上あればその処理へ
-                            self.two_pop_functions(&token)?;
-                        } else {
-                            bail!("Invalid Syntax");
-                        }
-                    }
-                };
+                self.manege_command(&token, &mut tokens)?;
             }
 
             // トークンの履歴を取得
@@ -651,6 +462,200 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
             self.stack_vec.stack.remove(0);
         }
 
+        Ok(())
+    }
+    fn manege_command(&mut self, token: &str, tokens: &mut Vec<String>) -> Result<()> {
+        match &token.to_lowercase()[..] {
+            "read" => {
+                if let Some(path) = tokens.pop() {
+                    self.mem_value.clear();
+                    self.func_mem.clear();
+                    self.stack_vec.clear();
+                    self.read_token = readfile(&path)?;
+                } else {
+                    bail!("too few arguments.");
+                }
+            }
+
+            "dsfix" => {
+                if let Some(point_num) = tokens.pop() {
+                    self.display_format = DispFormat::Fix;
+                    let pnum = point_num.to_string();
+                    self.disp_pointnum = pnum.parse()?;
+                } else {
+                    bail!("too few arguments.");
+                }
+            }
+
+            "dseng" => {
+                if let Some(point_num) = tokens.pop() {
+                    self.display_format = DispFormat::Eng;
+                    let pnum = point_num.to_string();
+                    self.disp_pointnum = pnum.parse()?;
+                } else {
+                    bail!("too few arguments.");
+                }
+            }
+
+            "dsall" => {
+                self.display_format = DispFormat::All;
+            }
+
+            "sto" | "to" => {
+                if let Some(key) = tokens.pop() {
+                    if !self.is_ok_mem_string(&key, false) {
+                        bail!("This memory key is not available.")
+                    }
+                    match self.stack_vec.stack.pop() {
+                        Some(value) => {
+                            match self.mem_value.insert(key.to_string(), value) {
+                                // 既にkeyが使われていれば値が返ってくるので上書きされた事を知らせる。
+                                Some(item) => self.add_result_message(&format!(
+                                    "{}:{:?} was overriden by {:?}.",
+                                    key, item, value
+                                )),
+                                None => self.add_result_message(&format!(
+                                    "{:?} is stocked to {}.",
+                                    value, key
+                                )),
+                            }
+                        }
+                        None => {
+                            bail!("invalid Syntax at memory value.");
+                        }
+                    }
+                } else {
+                    bail!("invalid Syntax at memory value.");
+                }
+            }
+
+            "mdel" => match tokens.pop() {
+                Some(key) => {
+                    if self.mem_value.remove(&key).is_some() {
+                        self.add_result_message(&format!("{} is removed", key));
+                    } else {
+                        bail!("Such name is none in memos")
+                    }
+                }
+                None => {
+                    bail!("invalid Syntax at delete memo.");
+                }
+            },
+
+            "def" | "fn" => match tokens.pop() {
+                Some(key) => {
+                    if !self.is_ok_mem_string(&key, true) {
+                        bail!("This func key is not available.")
+                    };
+
+                    // 残りのトークンを反転
+                    tokens.reverse();
+
+                    // 文字を連結
+                    let value = tokens.join(" ");
+                    if value.is_empty() {
+                        bail!("invalid Syntax at define function.");
+                    };
+
+                    match self.func_mem.insert(key.to_string(), value.to_string()) {
+                        Some(item) => {
+                            self.remark_message =
+                                format!("{}:{:?} was overriden by {:?}.", key, item, value)
+                        }
+                        None => self.remark_message = format!("{}:{:?} is defined.", key, value),
+                    };
+
+                    tokens.clear();
+                }
+
+                None => {
+                    bail!("invalid Syntax at funcs value.");
+                }
+            },
+
+            "repeat" | "rp" => match self.stack_vec.pop() {
+                Some(n) => {
+                    let repnum = n.to_usize().expect("Could not cast to usize");
+                    if tokens.is_empty() {
+                        bail!("no command for repeat")
+                    };
+
+                    let mut reptokens = tokens.to_owned();
+
+                    reptokens.reverse();
+
+                    let reptoken = reptokens.join(" ");
+
+                    for _ in 0..repnum - 1 {
+                        self.calc(&reptoken)?
+                    }
+                }
+
+                None => {
+                    bail!("repeat number is none.");
+                }
+            },
+
+            "roll" => match self.stack_vec.pop() {
+                Some(n) => match n.round().to_usize() {
+                    Some(n_usize) => {
+                        let rollnum = n_usize - 1;
+                        let lastnum = self.stack_vec.stack.len() - 1;
+
+                        if rollnum <= lastnum {
+                            self.stack_vec.stack.swap(lastnum - rollnum, lastnum);
+                        } else {
+                            self.stack_vec.stack.push(n);
+
+                            bail!("Invalid syntax at roll command.");
+                        }
+                    }
+
+                    None => {
+                        bail!("roll argument is not integer.");
+                    }
+                },
+
+                None => {
+                    bail!("repeat number is none.");
+                }
+            },
+
+            "fdel" => match tokens.pop() {
+                Some(key) => match self.func_mem.remove(&key) {
+                    Some(_) => {
+                        self.add_result_message(&format!("func:{} is removed", key));
+                    }
+                    None => bail!("Such name is none in functions"),
+                },
+
+                None => {
+                    bail!("invalid Syntax at delete function.");
+                }
+            },
+
+            _ => {
+                if self.mem_value.contains_key(token) {
+                    // メモに格納した値があればスタックに収納
+                    self.stack_vec.push(self.mem_value[token]);
+                } else if self.func_mem.contains_key(token) {
+                    // 定義した関数であればtokenを実行
+                    let functoken = self.func_mem[token].to_owned();
+                    self.calc(&functoken)?;
+                } else if self.no_pop_func.contains(&token.to_string()) {
+                    // no pop funcのワードに含まれていればその処理へ
+                    self.no_pop_functions(&token)?
+                } else if self.single_functions.contains(&token.to_string()) {
+                    // single pop funcのワードに含まれていればその処理へ
+                    self.single_pop_function(&token)?;
+                } else if self.stack_vec.stack.len() >= 2 {
+                    // その他演算子でスタック要素2個以上あればその処理へ
+                    self.two_pop_functions(&token)?;
+                } else {
+                    bail!("Invalid Syntax");
+                }
+            }
+        };
         Ok(())
     }
 
@@ -754,25 +759,16 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 }
             }
             "avg" => {
-                let nums: Vec<T> = self
-                    .stack_vec
-                    .stack
-                    .drain(self.last_stack_length..)
-                    .collect();
+                let length = self.stack_vec.len();
 
-                let avg_num = |x: &Vec<T>| -> T {
-                    x.iter().fold(num::zero(), |ac: T, &x| ac + x)
-                        / num::FromPrimitive::from_usize(x.len()).unwrap()
-                };
+                self.no_pop_functions("sum")?;
+                self.stack_vec.push(length);
+                self.two_pop_functions("/")?;
 
-                if nums.is_empty() {
-                    let result = avg_num(&self.stack_vec.stack);
-                    self.add_result_message(&format!("avg({:?})", &self.stack_vec.stack));
-                    self.stack_vec.clear();
-                    self.stack_vec.push(result);
+                if self.stack_vec.stack.is_empty() {
+                    self.add_result_message("Stack is None");
                 } else {
-                    self.stack_vec.push(avg_num(&nums));
-                    self.add_result_message(&format!("avg({:?})", &nums));
+                    self.add_result_message(&format!("/ {:?})", &length));
                 }
             }
             "rad" => {
@@ -830,6 +826,7 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 Some(n) => {
                     let num = *n;
                     let result = self.single_inner_function(token, num)?;
+                    self.add_result_message(&format!("{:?} {}", num, token));
                     self.stack_vec.pop();
                     self.stack_vec.push(result);
                 }
@@ -888,7 +885,7 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
         let a: T = self.stack_vec.stack[lastnum - 1];
         let b: T = self.stack_vec.stack[lastnum - 2];
         let result = self.two_pop_inner_function(token, a, b)?;
-
+        self.add_result_message(&format!("{:?} {:?} {}", b, a, token));
         // 成功していればスタック要素を２つ削除
         (0..2).for_each(|_| {
             self.stack_vec.stack.pop();
@@ -933,29 +930,23 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 judinteger(a)?;
                 judinteger(b)?;
 
-                return Ok(NumCast::from(
-                    b.to_i32().expect(cast_err_msg) & a.to_i32().expect(cast_err_msg),
-                )
-                .expect("Error at NumCast::from"));
+                NumCast::from(b.to_i32().expect(cast_err_msg) & a.to_i32().expect(cast_err_msg))
+                    .expect("Error at NumCast::from")
             }
             "or" => {
                 judinteger(a)?;
                 judinteger(b)?;
 
-                return Ok(NumCast::from(
-                    b.to_i32().expect(cast_err_msg) | a.to_i32().expect(cast_err_msg),
-                )
-                .expect("Error at NumCast::from"));
+                NumCast::from(b.to_i32().expect(cast_err_msg) | a.to_i32().expect(cast_err_msg))
+                    .expect("Error at NumCast::from")
             }
 
             "xor" => {
                 judinteger(a)?;
                 judinteger(b)?;
 
-                return Ok(NumCast::from(
-                    b.to_i32().expect(cast_err_msg) ^ a.to_i32().expect(cast_err_msg),
-                )
-                .expect("Error at NumCast::from"));
+                NumCast::from(b.to_i32().expect(cast_err_msg) ^ a.to_i32().expect(cast_err_msg))
+                    .expect("Error at NumCast::from")
             }
             "<<" => {
                 judinteger(a)?;
@@ -964,7 +955,7 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 if let Some(result) =
                     NumCast::from(b.to_i32().expect("overflow") << a.to_i32().expect("overflow"))
                 {
-                    return Ok(result);
+                    result
                 } else {
                     bail!("overflow at shift calculation.")
                 }
@@ -975,7 +966,7 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
 
                 match NumCast::from(b.to_i32().expect("overflow") >> a.to_i32().expect("overflow"))
                 {
-                    Some(result) => return Ok(result),
+                    Some(result) => result,
                     None => bail!("overflow at shift calculation."),
                 }
             }
@@ -987,12 +978,12 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 judinteger(a)?;
                 judinteger(b)?;
                 if a > b {
-                    return Ok(Zero::zero());
+                    Zero::zero()
+                } else {
+                    NumCast::from(frac(b)? / frac(b - a)?).expect("Error at NumCast::from")
                 }
-                let result =
-                    NumCast::from(frac(b)? / frac(b - a)?).expect("Error at NumCast::from");
-                return Ok(result);
             }
+
             "ncr" => {
                 // nCr = n! / (r!(n-r)!)
                 if a.to_i32() > Some(30000) || b.to_i32() > Some(30000) {
@@ -1004,25 +995,28 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                     return Ok(Zero::zero());
                 }
 
-                let result = NumCast::from(frac(b)? / (frac(a)? * frac(b - a)?))
-                    .expect("Error at NumCast::from");
-                return Ok(result);
+                NumCast::from(frac(b)? / (frac(a)? * frac(b - a)?)).expect("Error at NumCast::from")
             }
+
             "lcm" => {
                 judinteger(a)?;
                 judinteger(b)?;
                 let a_i32 = a.to_i32().expect(cast_err_msg);
                 let b_i32 = b.to_i32().expect(cast_err_msg);
                 let mut i: i32 = One::one();
+                let result: T;
                 loop {
                     let mulnum = a_i32.max(b_i32) * i;
                     let divnum = a_i32.min(b_i32);
                     if mulnum % divnum == 0 {
-                        return Ok(NumCast::from(mulnum).expect("Error at NumCast::from"));
+                        self.add_result_message(&format!("lcm ({:?},{:?})", a, b));
+                        result = NumCast::from(mulnum).expect("Error at NumCast::from");
+                        break;
                     } else {
                         i += 1;
                     }
                 }
+                result
             }
             "gcm" => {
                 judinteger(a)?;
@@ -1031,16 +1025,19 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 let b_i32 = b.to_i32().expect(cast_err_msg);
                 let snum = a_i32.min(b_i32);
                 let mnum = a_i32.max(b_i32);
+                let mut result = One::one();
 
                 for i in 1..snum {
                     if snum % i == 0 {
                         let ssnum = snum / i;
                         if mnum % ssnum == 0 {
-                            return Ok(NumCast::from(ssnum).expect("Error at NumCast::from"));
+                            result = NumCast::from(ssnum).expect("Error at NumCast::from");
+                            break;
                         }
                     }
                 }
-                return Ok(One::one());
+                self.add_result_message(&format!("gcm ({:?},{:?})", a, b));
+                result
             }
             _ => {
                 bail!("Invalid syntax: too few arguments.");
