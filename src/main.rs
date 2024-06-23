@@ -12,9 +12,7 @@ use num::{
 use rustyline::{config::Configurer, DefaultEditor};
 use std::{
     fmt::Debug,
-    fs::File,
-    io::{stdout, BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
+    io::{stdout, BufWriter, Write},
 };
 
 const HISTORY_SIZE: u8 = 8;
@@ -45,20 +43,17 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
             break;
         }
         execute!(&stdout, Clear(terminal::ClearType::All))?;
-
         app.last_stack_length = app.stack_vec.stack.len();
 
         // 変数ストックと関数ストックの表示用文字列の準備
         let mut memos = String::new();
         let mut funcmemo = String::new();
-
         // 変数ストックにアイテムが存在する時、表示用文字列に追加
         if !app.mem_value.is_empty() {
             app.mem_value.keys().for_each(|mem_key| {
                 memos += &format!("{}\u{22B3}{:},", mem_key, app.mem_value[mem_key]);
             });
         }
-
         // 関数ストックにアイテムが存在する時、表示用文字列に追加
         if !app.func_mem.is_empty() {
             app.func_mem.keys().enumerate().for_each(|(i, func_key)| {
@@ -138,7 +133,6 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
 
         stdout.flush()?;
     }
-
     stdout.execute(LeaveAlternateScreen)?;
     Ok(())
 }
@@ -148,40 +142,31 @@ fn app_execute(app: &mut RpnCalculator<f64>) -> Result<()> {
 fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -> Result<bool> {
     let in_token: String;
 
-    match app.read_token.pop() {
-        // 外部ファイルを読み込んだとき (readを使用)
-        Some(readtoken) => {
-            in_token = readtoken;
-        }
-        None => {
-            // 外部ファイルを使用しないとき,
-            // 標準入力から読み込んで処理
-            let readline = my_readline.readline(">> ");
+    // 標準入力から読み込んで処理
+    let readline = my_readline.readline(">> ");
 
-            match readline {
-                Ok(token) => {
-                    in_token = token.trim().to_lowercase();
-                    if &in_token == "q" || &in_token == "quit" {
-                        return Ok(false);
-                    }
-                }
-                Err(_) => {
-                    in_token = "".to_string();
-                }
-            }
-
-            app.result_message.clear();
-            app.remark_message.clear();
-
-            match app.stack_vec.undo_stack.is_empty()
-                || Some(&app.stack_vec.stack) != app.stack_vec.undo_stack.last()
-            {
-                true => {
-                    app.stack_vec.backup();
-                }
-                false => (),
+    match readline {
+        Ok(token) => {
+            in_token = token;
+            if &in_token == "q" || &in_token == "quit" {
+                return Ok(false);
             }
         }
+        Err(_) => {
+            in_token = "".to_string();
+        }
+    }
+
+    app.result_message.clear();
+    app.remark_message.clear();
+
+    match app.stack_vec.undo_stack.is_empty()
+        || Some(&app.stack_vec.stack) != app.stack_vec.undo_stack.last()
+    {
+        true => {
+            app.stack_vec.backup();
+        }
+        false => (),
     }
 
     // 計算結果にエラーがなければ計算結果
@@ -196,24 +181,6 @@ fn manage_token(app: &mut RpnCalculator<f64>, my_readline: &mut DefaultEditor) -
         }
     }
     Ok(true)
-}
-
-fn readfile(path: &str) -> Result<Vec<String>> {
-    let fpath = PathBuf::from(path);
-    let fs = File::open(fpath)?;
-    let reader = BufReader::new(fs);
-    let mut readstrings = Vec::new();
-
-    for line in reader.lines() {
-        let ordertext = line?;
-        if ordertext.contains('#') {
-        } else {
-            readstrings.push(ordertext);
-        }
-    }
-    readstrings.reverse();
-
-    Ok(readstrings)
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -305,7 +272,6 @@ struct RpnCalculator<T: Num + Clone> {
     token_history: Vec<String>,
     result_message: String,
     remark_message: String,
-    read_token: Vec<String>,
     display_format: DispFormat,
     disp_pointnum: usize,
 }
@@ -339,7 +305,6 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
             token_history: Vec::with_capacity(16),
             result_message: String::with_capacity(16),
             remark_message: String::with_capacity(16),
-            read_token: Vec::with_capacity(16),
             display_format: DispFormat::Fix,
             disp_pointnum: 3,
         }
@@ -422,7 +387,6 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                     && (second.is_ascii_digit() || matches!(second, 'a'..='f'))
                 {
                     self.basenum_convert(&token)?;
-
                     is_nbase = true;
                 } else if ctoken[ctoken_len - 2] != '/'
                     && matches!(tail, '+' | '-' | '/' | '*' | '^')
@@ -466,17 +430,6 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
     }
     fn manege_command(&mut self, token: &str, tokens: &mut Vec<String>) -> Result<()> {
         match &token.to_lowercase()[..] {
-            "read" => {
-                if let Some(path) = tokens.pop() {
-                    self.mem_value.clear();
-                    self.func_mem.clear();
-                    self.stack_vec.clear();
-                    self.read_token = readfile(&path)?;
-                } else {
-                    bail!("too few arguments.");
-                }
-            }
-
             "dsfix" => {
                 if let Some(point_num) = tokens.pop() {
                     self.display_format = DispFormat::Fix;
@@ -644,13 +597,13 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                     self.calc(&functoken)?;
                 } else if self.no_pop_func.contains(&token.to_string()) {
                     // no pop funcのワードに含まれていればその処理へ
-                    self.no_pop_functions(&token)?
+                    self.no_pop_functions(token)?
                 } else if self.single_functions.contains(&token.to_string()) {
                     // single pop funcのワードに含まれていればその処理へ
-                    self.single_pop_function(&token)?;
+                    self.single_pop_function(token)?;
                 } else if self.stack_vec.stack.len() >= 2 {
                     // その他演算子でスタック要素2個以上あればその処理へ
-                    self.two_pop_functions(&token)?;
+                    self.two_pop_functions(token)?;
                 } else {
                     bail!("Invalid Syntax");
                 }
@@ -700,7 +653,7 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
                 }
             }
             "e" => self.stack_vec.push(FloatConst::E()),
-            "pi" => self.stack_vec.push(num::traits::FloatConst::PI()),
+            "pi" => self.stack_vec.push(FloatConst::PI()),
             "primes" | "prs" => match &self.stack_vec.stack.last() {
                 Some(bnum) => {
                     if let Some(num) = bnum.to_i32() {
@@ -1089,7 +1042,6 @@ impl<T: Float + FloatConst + FromPrimitive + Debug> RpnCalculator<T> {
 
         writeln!(help_buff, "exmple of [bin,oct,hex] -> [B101 O51 Hff]\n")?;
 
-        writeln!(help_buff, "read [filename]: read textfile")?;
         help_buff.flush()?;
 
         let mut rl = DefaultEditor::new()?;
